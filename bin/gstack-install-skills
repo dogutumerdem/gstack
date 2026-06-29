@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# gstack-install-skills — install Claude Code skills without the Playwright check
+# Run this when Playwright is still downloading or not needed
+set -e
+
+GSTACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+IS_WINDOWS=1
+SKILL_PREFIX=0
+
+_WINDOWS_COPY_NOTE_PRINTED=0
+_print_windows_copy_note_once() {
+  if [ "$_WINDOWS_COPY_NOTE_PRINTED" -eq 0 ]; then
+    echo "  note: Windows install uses file copies. Re-run setup after 'git pull'."
+    _WINDOWS_COPY_NOTE_PRINTED=1
+  fi
+}
+
+_link_or_copy() {
+  local src="$1" dst="$2"
+  rm -rf "$dst"
+  [ ! -e "$src" ] && return 0
+  if [ -d "$src" ]; then cp -R "$src" "$dst"; else cp -f "$src" "$dst"; fi
+}
+
+link_claude_skill_dirs() {
+  local gstack_dir="$1" skills_dir="$2"
+  local linked=()
+  for skill_dir in "$gstack_dir"/*/; do
+    [ -f "$skill_dir/SKILL.md" ] || continue
+    dir_name="$(basename "$skill_dir")"
+    [ "$dir_name" = "node_modules" ] && continue
+    skill_name=$(grep -m1 '^name:' "$skill_dir/SKILL.md" 2>/dev/null | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
+    [ -z "$skill_name" ] && skill_name="$dir_name"
+    link_name="$skill_name"
+    target="$skills_dir/$link_name"
+    [ -L "$target" ] && rm -f "$target"
+    mkdir -p "$target"
+    [ -L "$target/SKILL.md" ] && rm "$target/SKILL.md"
+    _link_or_copy "$gstack_dir/$dir_name/SKILL.md" "$target/SKILL.md"
+    if [ -d "$gstack_dir/$dir_name/sections" ]; then
+      [ -e "$target/sections" ] || [ -L "$target/sections" ] && rm -rf "$target/sections"
+      _link_or_copy "$gstack_dir/$dir_name/sections" "$target/sections"
+    fi
+    linked+=("$link_name")
+  done
+  [ ${#linked[@]} -gt 0 ] && echo "  linked skills: ${linked[*]}" && _print_windows_copy_note_once
+}
+
+link_claude_root_skill_alias() {
+  local gstack_dir="$1" skills_dir="$2"
+  local target="$skills_dir/_gstack-command"
+  [ -f "$gstack_dir/SKILL.md" ] || return 0
+  [ -L "$target" ] && rm -f "$target"
+  mkdir -p "$target"
+  [ -L "$target/SKILL.md" ] && rm "$target/SKILL.md"
+  _link_or_copy "$gstack_dir/SKILL.md" "$target/SKILL.md"
+  echo "  linked root skill alias: gstack"
+}
+
+CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
+INSTALL_SKILLS_DIR="$CLAUDE_SKILLS_DIR"
+
+echo "gstack-install-skills: installing Claude skills..."
+echo "  gstack: $GSTACK_DIR"
+echo "  skills: $INSTALL_SKILLS_DIR"
+
+mkdir -p "$CLAUDE_SKILLS_DIR" "$HOME/.gstack/projects"
+
+# Patch name: fields for no-prefix mode
+if [ -x "$GSTACK_DIR/bin/gstack-patch-names" ]; then
+  "$GSTACK_DIR/bin/gstack-patch-names" "$GSTACK_DIR" 0
+  echo "  patched skill names"
+fi
+
+# Link individual skills
+link_claude_skill_dirs "$GSTACK_DIR" "$INSTALL_SKILLS_DIR"
+link_claude_root_skill_alias "$GSTACK_DIR" "$INSTALL_SKILLS_DIR"
+
+# Run gstack-relink for consistency
+if [ -x "$GSTACK_DIR/bin/gstack-relink" ]; then
+  GSTACK_SKILLS_DIR="$INSTALL_SKILLS_DIR" GSTACK_INSTALL_DIR="$GSTACK_DIR" \
+    "$GSTACK_DIR/bin/gstack-relink" >/dev/null 2>&1 || true
+fi
+
+# Backwards-compat alias: /connect-chrome → /open-gstack-browser
+_OGB_LINK="$INSTALL_SKILLS_DIR/connect-chrome"
+[ -L "$_OGB_LINK" ] || [ ! -e "$_OGB_LINK" ] && _link_or_copy "gstack/open-gstack-browser" "$_OGB_LINK" 2>/dev/null || true
+
+# Record install version
+CURRENT_VERSION=$(cat "$GSTACK_DIR/VERSION" 2>/dev/null || echo "unknown")
+if [ "$CURRENT_VERSION" != "unknown" ]; then
+  echo "$CURRENT_VERSION" > "$HOME/.gstack/.last-setup-version"
+fi
+
+# First-time welcome
+if [ ! -f "$HOME/.gstack/.welcome-seen" ]; then
+  echo ""
+  echo "  gstack is ready. First move:"
+  echo "    New idea / empty repo?   /office-hours  or  /spec"
+  echo "    Existing code?           /qa  to see it work, or  /investigate"
+  echo "  (Run /gstack-upgrade anytime to stay current)"
+  echo ""
+  touch "$HOME/.gstack/.welcome-seen"
+fi
+
+echo ""
+echo "gstack skills installed. Restart Claude Code to use them."
+echo "Note: /browse skills require Playwright — run 'npx playwright install chromium-headless-shell'"
+echo "from the gstack directory once the browser download completes."
